@@ -32,7 +32,7 @@ required GPL notices and corresponding source for the driver route.
 The Bridge as a combined work is licensed under GNU GPL version 3 or later.
 Complete corresponding source for public releases is published at:
 
-- https://github.com/mediashotsnl-dev/Defkon-ADSB-SDR-Bridge
+- https://github.com/mediashotsnl-dev/Defkon-ADSB-SDR-Bridge/tree/bridge-v0.1.0
 
 See `LICENSE`, `COPYRIGHT`, `THIRD_PARTY_NOTICES.md`, `BUILDING.md`, and
 `RELEASING.md`. The same license and source information is available from the
