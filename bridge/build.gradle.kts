@@ -41,13 +41,13 @@ val releaseSigningConfigured = listOf(
 
 android {
     namespace = "com.mediashots.defkonadsbbridge"
-    compileSdk = 37
+    compileSdk = 36
     ndkVersion = "28.2.13676358"
 
     defaultConfig {
         applicationId = "com.mediashots.defkonadsbbridge"
         minSdk = 26
-        targetSdk = 37
+        targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"
 
@@ -101,7 +101,7 @@ android {
 }
 
 dependencies {
-    implementation(libs.androidx.core.ktx)
+    implementation("androidx.core:core:1.17.0")
     testImplementation(libs.json)
     testImplementation(libs.junit)
 }
