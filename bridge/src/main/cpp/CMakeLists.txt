@@ -7,6 +7,14 @@ set(LIBUSB_DIR ${GPL_DIR}/libusb)
 set(RTLSDR_DIR ${GPL_DIR}/rtl-sdr)
 set(READSB_DIR ${GPL_DIR}/readsb)
 
+set(LIBUSB_GENERATED_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/libusb)
+file(MAKE_DIRECTORY ${LIBUSB_GENERATED_DIR})
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/libusb_version_describe.h.in
+    ${LIBUSB_GENERATED_DIR}/version_describe.h
+    @ONLY
+)
+
 add_library(libusb_static STATIC
     ${LIBUSB_DIR}/libusb/core.c
     ${LIBUSB_DIR}/libusb/descriptor.c
@@ -24,6 +32,7 @@ target_include_directories(libusb_static PUBLIC
     ${LIBUSB_DIR}/android
     ${LIBUSB_DIR}/libusb
     ${LIBUSB_DIR}/libusb/os
+    ${LIBUSB_GENERATED_DIR}
 )
 
 target_compile_options(libusb_static PRIVATE
