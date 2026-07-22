@@ -47,7 +47,7 @@ public class MainActivity extends Activity {
     private static final int SDR_DRIVER_REQUEST = 1091;
     private static final String RTL_SDR_DRIVER_PACKAGE = "marto.rtl_tcp_andro";
     private static final String SOURCE_CODE_URL =
-        "https://github.com/mediashotsnl-dev/Defkon-ADSB-SDR-Bridge/tree/bridge-v0.1.0";
+        "https://github.com/mediashotsnl-dev/Defkon-ADSB-SDR-Bridge/tree/bridge-v0.1.1";
     private static final String DEFKON_PACKAGE = "com.mediashots.defkoniv";
     private static final String DEFKON_ACTION_USE_ADSB_SDR = "com.mediashots.defkoniv.action.USE_ADSB_SDR";
     private static final String DEFKON_EXTRA_USE_ADSB_SDR = "com.mediashots.defkoniv.extra.USE_ADSB_SDR";

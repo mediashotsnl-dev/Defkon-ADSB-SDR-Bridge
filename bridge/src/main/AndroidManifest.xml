@@ -20,8 +20,9 @@
         android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
-        android:icon="@drawable/ic_bridge_launcher"
+        android:icon="@mipmap/ic_bridge_launcher"
         android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_bridge_launcher_round"
         android:theme="@style/Theme.DefkonAdsbBridge">
         <activity
             android:name=".MainActivity"
