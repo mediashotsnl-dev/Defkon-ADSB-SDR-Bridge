@@ -1,0 +1,8 @@
+DEFKON ADSB SDR BRIDGE
+Copyright (C) 2026 MediaShots NL contributors
+
+The Bridge-specific source code is licensed under the GNU General Public
+License version 3 or (at your option) any later version.
+
+Third-party portions retain their original copyright notices and licenses.
+See THIRD_PARTY_NOTICES.md and the license files in src/main/cpp/gpl/.

@@ -1,0 +1,6 @@
+readsb (3.16) stable; urgency=medium
+
+  * debian: cleanup package build / service file
+  * debian: autogenerate manpage during build using help2man
+
+ -- Matthias Wirth <matthias.wirth@gmail.com>  Mon, 18 Aug 2025 09:00:00 +0000

@@ -1,0 +1,27 @@
+Source: readsb
+Section: net
+Priority: optional
+Maintainer: Matthias Wirth <matthias.wirth@gmail.com>
+Build-Depends: debhelper(>=9), libncurses-dev, zlib1g-dev, pkg-config, libzstd-dev, help2man,
+  libusb-1.0-0-dev <rtlsdr> <soapysdr> <hackrf> <bladerf> <plutosdr> <with_sdrs>,
+  librtlsdr-dev <rtlsdr> <with_sdrs>,
+  libsoapysdr-dev <soapysdr> <with_sdrs>,
+  libhackrf-dev <hackrf> <with_sdrs>,
+  libbladerf-dev <bladerf> <with_sdrs>,
+  libad9361-dev <plutosdr> <with_sdrs>,
+  libiio-dev <plutosdr> <with_sdrs>
+Standards-Version: 4.4.0.1
+Homepage: https://github.com/wiedehopf/readsb
+Vcs-Git: https://github.com/wiedehopf/readsb.git
+
+Package: readsb
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, adduser
+Description: Networked ADS-B / ModeS Decoder for SDRs (1090 MHz)
+ Supports RTL-SDR, BladeRF, HackRF, PlutoSDR and others via SoapySDR
+ Can output and input these protocols via TCP listen and connect:
+ beast, AVR, SBS, some Asterix, UAT from dump978-fa (input only)
+ Provides various live update json files
+ Can save aircraft track data persistently as gzipped json files
+ Fast builtin webserver for area and other queries, returns json format
+ Webinterface available using the live update json files

@@ -1,0 +1,9 @@
+<resources>
+    <style name="Theme.DefkonAdsbBridge" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/bridge_background</item>
+        <item name="android:fontFamily">monospace</item>
+        <item name="android:colorAccent">@color/bridge_accent</item>
+        <item name="android:navigationBarColor">@color/bridge_background</item>
+        <item name="android:statusBarColor">@color/bridge_background</item>
+    </style>
+</resources>
