@@ -156,7 +156,7 @@ jobs:
       - name: Install Android native toolchain
         run: sdkmanager "platforms;android-36" "ndk;28.2.13676358" "cmake;3.22.1"
       - name: Unit tests and debug build
-        run: ./gradlew :bridge:testDebugUnitTest :bridge:assembleDebug
+        run: bash ./gradlew :bridge:testDebugUnitTest :bridge:assembleDebug
 '@ | Set-Content -LiteralPath (Join-Path $outputRoot '.github\workflows\android.yml') -Encoding ASCII
 
 Write-Host "Public Bridge source created at: $outputRoot"

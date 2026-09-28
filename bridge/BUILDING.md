@@ -31,8 +31,8 @@ cmake;3.22.1
 On Linux or macOS:
 
 ```bash
-./gradlew :bridge:testDebugUnitTest :bridge:assembleDebug
-./gradlew :bridge:bundleRelease
+bash ./gradlew :bridge:testDebugUnitTest :bridge:assembleDebug
+bash ./gradlew :bridge:bundleRelease
 ```
 
 On Windows:
