@@ -3,12 +3,12 @@
 ## Required tools
 
 - JDK 17
-- Android SDK Platform 37
+- Android SDK Platform 36
 - Android SDK Build Tools installed by the Android Gradle Plugin
 - Android NDK `28.2.13676358`
 - CMake `3.22.1`
 
-The repository pins Gradle `9.4.1` and Android Gradle Plugin `9.2.1`.
+The repository pins Gradle `9.6.1` and Android Gradle Plugin `9.2.1`.
 
 ## Configure the Android SDK
 
@@ -21,7 +21,7 @@ sdk.dir=/absolute/path/to/Android/Sdk
 Install the required native tools with Android SDK Manager when needed:
 
 ```text
-platforms;android-37
+platforms;android-36
 ndk;28.2.13676358
 cmake;3.22.1
 ```

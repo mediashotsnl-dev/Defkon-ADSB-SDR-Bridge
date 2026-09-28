@@ -87,7 +87,7 @@ New-Item -ItemType Directory -Path (Join-Path $outputRoot 'gradle') -Force | Out
 @'
 [versions]
 agp = "9.2.1"
-coreKtx = "1.19.0"
+coreKtx = "1.18.0"
 junit = "4.13.2"
 json = "20260522"
 
@@ -152,7 +152,7 @@ jobs:
           java-version: '17'
       - uses: android-actions/setup-android@v3
       - name: Install Android native toolchain
-        run: sdkmanager "platforms;android-37" "ndk;28.2.13676358" "cmake;3.22.1"
+        run: sdkmanager "platforms;android-36" "ndk;28.2.13676358" "cmake;3.22.1"
       - name: Unit tests and debug build
         run: ./gradlew :bridge:testDebugUnitTest :bridge:assembleDebug
 '@ | Set-Content -LiteralPath (Join-Path $outputRoot '.github\workflows\android.yml') -Encoding ASCII

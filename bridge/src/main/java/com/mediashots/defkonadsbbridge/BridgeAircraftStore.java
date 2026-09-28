@@ -11,6 +11,7 @@ import java.util.Map;
 final class BridgeAircraftStore {
     private static final long POSITION_HOLD_MS = 45_000L;
     private static final long AIRCRAFT_TTL_MS = 60_000L;
+    private static final long VERTICAL_RATE_HOLD_MS = 15_000L;
     private static final double JUMP_GRACE_KM = 0.35;
     private static final double JUMP_SPEED_FACTOR = 2.8;
 
@@ -46,9 +47,15 @@ final class BridgeAircraftStore {
         lastMessageMs = nowMs;
 
         if (update.flight != null) aircraft.flight = update.flight;
+        if (update.category != null) aircraft.category = update.category;
         if (update.altitudeFt != null) aircraft.altitudeFt = update.altitudeFt;
         if (update.groundSpeedKt != null) aircraft.groundSpeedKt = update.groundSpeedKt;
         if (update.trackDeg != null) aircraft.trackDeg = update.trackDeg;
+        if (update.verticalRateFpm != null) {
+            aircraft.verticalRateFpm = update.verticalRateFpm;
+            aircraft.verticalRateReference = update.verticalRateReference;
+            aircraft.lastVerticalRateTimeMs = nowMs;
+        }
 
         if (update.lat != null && update.lon != null && isValidPosition(update.lat, update.lon)) {
             if (isReasonablePositionUpdate(aircraft, update.lat, update.lon, nowMs)) {
@@ -79,9 +86,20 @@ final class BridgeAircraftStore {
                 JSONObject item = new JSONObject();
                 item.put("hex", aircraft.hex);
                 if (aircraft.flight != null && !aircraft.flight.isEmpty()) item.put("flight", aircraft.flight);
+                if (aircraft.category != null && !aircraft.category.isEmpty()) item.put("category", aircraft.category);
                 if (aircraft.altitudeFt != null) item.put("alt_baro", aircraft.altitudeFt);
                 if (aircraft.groundSpeedKt != null) item.put("gs", aircraft.groundSpeedKt);
                 if (aircraft.trackDeg != null) item.put("track", aircraft.trackDeg);
+                if (
+                    aircraft.verticalRateFpm != null &&
+                    nowMs - aircraft.lastVerticalRateTimeMs <= VERTICAL_RATE_HOLD_MS
+                ) {
+                    String rateKey = "BARO".equals(aircraft.verticalRateReference)
+                        ? "baro_rate"
+                        : "GEOM".equals(aircraft.verticalRateReference) ? "geom_rate" : "vert_rate";
+                    item.put(rateKey, aircraft.verticalRateFpm);
+                    item.put("seen_rate", roundSeconds(secondsSince(nowMs, aircraft.lastVerticalRateTimeMs)));
+                }
 
                 double seenSec = secondsSince(nowMs, aircraft.lastMessageTimeMs);
                 item.put("seen", roundSeconds(seenSec));
@@ -169,13 +187,17 @@ final class BridgeAircraftStore {
     private static final class Aircraft {
         final String hex;
         String flight;
+        String category;
         Double lat;
         Double lon;
         Integer altitudeFt;
         Double groundSpeedKt;
         Double trackDeg;
+        Double verticalRateFpm;
+        String verticalRateReference;
         long lastMessageTimeMs;
         long lastPositionTimeMs;
+        long lastVerticalRateTimeMs;
         int messageCount;
 
         Aircraft(String hex) {
@@ -186,28 +208,37 @@ final class BridgeAircraftStore {
     private static final class SbsUpdate {
         final String hex;
         final String flight;
+        final String category;
         final Double lat;
         final Double lon;
         final Integer altitudeFt;
         final Double groundSpeedKt;
         final Double trackDeg;
+        final Double verticalRateFpm;
+        final String verticalRateReference;
 
         SbsUpdate(
             String hex,
             String flight,
+            String category,
             Double lat,
             Double lon,
             Integer altitudeFt,
             Double groundSpeedKt,
-            Double trackDeg
+            Double trackDeg,
+            Double verticalRateFpm,
+            String verticalRateReference
         ) {
             this.hex = hex;
             this.flight = flight;
+            this.category = category;
             this.lat = lat;
             this.lon = lon;
             this.altitudeFt = altitudeFt;
             this.groundSpeedKt = groundSpeedKt;
             this.trackDeg = trackDeg;
+            this.verticalRateFpm = verticalRateFpm;
+            this.verticalRateReference = verticalRateReference;
         }
 
         static SbsUpdate parse(String line) {
@@ -220,18 +251,34 @@ final class BridgeAircraftStore {
             return new SbsUpdate(
                 hex.toUpperCase(Locale.US),
                 clean(fields[10]),
+                fields.length > 23 ? normalizedCategory(fields[23]) : null,
                 parseDouble(fields[14]),
                 parseDouble(fields[15]),
                 parseInt(fields[11]),
                 parseDouble(fields[12]),
-                parseDouble(fields[13])
+                parseDouble(fields[13]),
+                parseDouble(fields[16]),
+                fields.length > 22 ? normalizedVerticalRateReference(fields[22]) : null
             );
+        }
+
+        private static String normalizedVerticalRateReference(String value) {
+            String cleaned = clean(value);
+            if (cleaned == null) return null;
+            String normalized = cleaned.toUpperCase(Locale.US);
+            return "BARO".equals(normalized) || "GEOM".equals(normalized) ? normalized : null;
         }
 
         private static String clean(String value) {
             if (value == null) return null;
             String trimmed = value.trim();
             return trimmed.isEmpty() ? null : trimmed;
+        }
+
+        private static String normalizedCategory(String value) {
+            String cleaned = clean(value);
+            if (cleaned == null || !cleaned.matches("(?i)[A-D][0-7]")) return null;
+            return cleaned.toUpperCase(Locale.US);
         }
 
         private static Integer parseInt(String value) {

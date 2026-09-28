@@ -45,13 +45,15 @@ public class BridgeService extends Service {
     public static final String ACTION_SEND_TEST = "com.mediashots.defkonadsbbridge.action.SEND_TEST";
     public static final String ACTION_START_SDR = "com.mediashots.defkonadsbbridge.action.START_SDR";
     public static final String ACTION_STOP_SDR = "com.mediashots.defkonadsbbridge.action.STOP_SDR";
+    public static final String ACTION_USB_DETACHED = "com.mediashots.defkonadsbbridge.action.USB_DETACHED";
     public static final String ACTION_START_NATIVE_SDR = "com.mediashots.defkonadsbbridge.action.START_NATIVE_SDR";
-    public static final String ACTION_START_EXTERNAL_SDR = "com.mediashots.defkonadsbbridge.action.START_EXTERNAL_SDR";
     public static final String ACTION_STATUS = "com.mediashots.defkonadsbbridge.action.STATUS";
     public static final String EXTRA_SERVER = "server";
     public static final String EXTRA_CLIENTS = "clients";
     public static final String EXTRA_LOG = "log";
     public static final String EXTRA_DECODER_MODE = "decoder_mode";
+    public static final String EXTRA_ECO_MODE = "eco_mode";
+    public static final String EXTRA_SDR_RUNNING = "sdr_running";
     public static final int DECODER_MODE_LEGACY_JAVA = 0;
     public static final int DECODER_MODE_NATIVE_FAST = 1;
     public static final int DECODER_MODE_READSB_CORE = 2;
@@ -61,12 +63,12 @@ public class BridgeService extends Service {
     private static final int NOTIFICATION_ID = 1090;
     private static final int SDR_MODE_NONE = 0;
     private static final int SDR_MODE_NATIVE = 1;
-    private static final int SDR_MODE_EXTERNAL = 2;
-    private static final int NATIVE_FAILURES_BEFORE_FALLBACK = 2;
-    private static final long SDR_RESTART_DELAY_MS = 1500L;
+    private static final long SDR_RESTART_DELAY_MS = 1000L;
+    private static final long MAX_SDR_RESTART_DELAY_MS = 30_000L;
     private static final long REPEATED_STATUS_LOG_MS = 1000L;
     private static final long CLIENT_STATUS_LOG_MS = 2000L;
-    private static final long CLIENT_STATUS_BROADCAST_MS = 500L;
+    private static final long NORMAL_CLIENT_STATUS_BROADCAST_MS = 500L;
+    private static final long ECO_CLIENT_STATUS_BROADCAST_MS = 5_000L;
     private static final int MAX_SBS_CLIENTS = 4;
     private static final int MAX_HTTP_REQUEST_BYTES = 8192;
     private static final int MAX_PENDING_SBS_LINES = 256;
@@ -74,6 +76,7 @@ public class BridgeService extends Service {
     private static final String PREFS = "bridge_diagnostics";
     private static final String PREF_REQUESTED_SDR_MODE = "requested_sdr_mode";
     private static final String PREF_DECODER_MODE = "decoder_mode";
+    private static final String PREF_ECO_MODE = "eco_mode";
 
     private final ExecutorService io = Executors.newFixedThreadPool(4);
     private final ExecutorService sbsClientIo = Executors.newFixedThreadPool(MAX_SBS_CLIENTS);
@@ -89,7 +92,6 @@ public class BridgeService extends Service {
 
     private ServerSocket serverSocket;
     private ServerSocket aircraftJsonSocket;
-    private RtlTcpAdsbReader externalReader;
     private NativeAdsbReader nativeReader;
     private volatile boolean running;
     private volatile boolean aircraftJsonRunning;
@@ -98,6 +100,7 @@ public class BridgeService extends Service {
     private final Object sdrLock = new Object();
     private volatile int requestedSdrMode = SDR_MODE_NONE;
     private volatile int decoderMode = DECODER_MODE_READSB_CORE;
+    private volatile boolean ecoMode;
     private int consecutiveNativeFailures;
     private String serverStatus = "SERVER | STARTING";
     private String aircraftJsonStatus = "JSON | STARTING";
@@ -113,18 +116,20 @@ public class BridgeService extends Service {
         BridgeCrashLogger.install(this);
         SharedPreferences preferences = getSharedPreferences(PREFS, MODE_PRIVATE);
         requestedSdrMode = sanitizeSdrMode(preferences.getInt(PREF_REQUESTED_SDR_MODE, SDR_MODE_NONE));
-        decoderMode = sanitizeDecoderMode(preferences.getInt(PREF_DECODER_MODE, DECODER_MODE_READSB_CORE));
+        decoderMode = DECODER_MODE_READSB_CORE;
+        ecoMode = preferences.getBoolean(PREF_ECO_MODE, false);
         createNotificationChannel();
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         String action = intent != null ? intent.getAction() : ACTION_START;
-        decoderMode = sanitizeDecoderMode(intent != null
-            ? intent.getIntExtra(EXTRA_DECODER_MODE, decoderMode)
-            : decoderMode);
-        persistDecoderMode();
-        startInForeground(foregroundTypeForAction(action));
+        boolean previousEcoMode = ecoMode;
+        decoderMode = DECODER_MODE_READSB_CORE;
+        ecoMode = intent != null ? intent.getBooleanExtra(EXTRA_ECO_MODE, ecoMode) : ecoMode;
+        boolean readsbProfileChanged = previousEcoMode != ecoMode;
+        persistReadsbProfile();
+        promoteConnectedDeviceForegroundIfPermitted();
         if (ACTION_STOP.equals(action)) {
             setRequestedSdrMode(SDR_MODE_NONE);
             stopBridge();
@@ -140,18 +145,23 @@ public class BridgeService extends Service {
         } else if (ACTION_STOP_SDR.equals(action)) {
             setRequestedSdrMode(SDR_MODE_NONE);
             stopSdrReader();
-            startInForeground(ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
+            removeForegroundNotification();
             sendStatus("SDR READER STOPPED");
+        } else if (ACTION_USB_DETACHED.equals(action)) {
+            stopSdrReader();
+            removeForegroundNotification();
+            sendStatus("NATIVE SDR WAIT DONGLE | READSB AUTO RESUME");
         } else if (ACTION_START_NATIVE_SDR.equals(action)) {
             setRequestedSdrMode(SDR_MODE_NATIVE);
             consecutiveNativeFailures = 0;
             promoteConnectedDeviceForegroundIfPermitted();
-            startNativeSdrReaderIfNeeded();
-        } else if (ACTION_START_EXTERNAL_SDR.equals(action)) {
-            setRequestedSdrMode(SDR_MODE_EXTERNAL);
-            consecutiveNativeFailures = 0;
-            promoteConnectedDeviceForegroundIfPermitted();
-            startExternalSdrReaderIfNeeded();
+            if (readsbProfileChanged && (sdrRunning || sdrStarting)) {
+                stopSdrReader();
+                sendStatus("READSB PROFILE SWITCH | " + (ecoMode ? "ECO" : "NORMAL"));
+                scheduleSdrRestartIfRequested(SDR_MODE_NATIVE, "READSB PROFILE ACTIVE", 500L);
+            } else {
+                startNativeSdrReaderIfNeeded();
+            }
         } else if (ACTION_START.equals(action)) {
             resumeRequestedSdrModeIfNeeded();
         }
@@ -189,17 +199,12 @@ public class BridgeService extends Service {
         }
     }
 
-    private int foregroundTypeForAction(String action) {
-        if (ACTION_STOP.equals(action) || ACTION_STOP_SDR.equals(action)) {
-            return ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC;
+    private void removeForegroundNotification() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            stopForeground(STOP_FOREGROUND_REMOVE);
+        } else {
+            stopForeground(true);
         }
-        boolean sdrRequested = requestedSdrMode != SDR_MODE_NONE ||
-            ACTION_START_SDR.equals(action) ||
-            ACTION_START_NATIVE_SDR.equals(action) ||
-            ACTION_START_EXTERNAL_SDR.equals(action);
-        return sdrRequested && hasUsbDevicePermission()
-            ? ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
-            : ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC;
     }
 
     private Notification buildNotification(String text) {
@@ -242,15 +247,16 @@ public class BridgeService extends Service {
             .apply();
     }
 
-    private void persistDecoderMode() {
+    private void persistReadsbProfile() {
         getSharedPreferences(PREFS, MODE_PRIVATE)
             .edit()
             .putInt(PREF_DECODER_MODE, decoderMode)
+            .putBoolean(PREF_ECO_MODE, ecoMode)
             .apply();
     }
 
     private int sanitizeSdrMode(int mode) {
-        if (mode == SDR_MODE_NATIVE || mode == SDR_MODE_EXTERNAL) return mode;
+        if (mode == SDR_MODE_NATIVE) return mode;
         return SDR_MODE_NONE;
     }
 
@@ -258,9 +264,6 @@ public class BridgeService extends Service {
         if (requestedSdrMode == SDR_MODE_NATIVE) {
             promoteConnectedDeviceForegroundIfPermitted();
             startNativeSdrReaderIfNeeded();
-        } else if (requestedSdrMode == SDR_MODE_EXTERNAL) {
-            promoteConnectedDeviceForegroundIfPermitted();
-            startExternalSdrReaderIfNeeded();
         }
     }
 
@@ -459,11 +462,8 @@ public class BridgeService extends Service {
             promoteConnectedDeviceForegroundIfPermitted();
             startNativeSdrReaderIfNeeded();
         } else {
-            sendStatus("NATIVE SDR CORE NOT READY | USE EXTERNAL");
-            setRequestedSdrMode(SDR_MODE_EXTERNAL);
-            consecutiveNativeFailures = 0;
-            promoteConnectedDeviceForegroundIfPermitted();
-            startExternalSdrReaderIfNeeded();
+            setRequestedSdrMode(SDR_MODE_NATIVE);
+            sendStatus("READSB CORE NOT READY");
         }
     }
 
@@ -480,7 +480,8 @@ public class BridgeService extends Service {
                 this,
                 this::broadcastLine,
                 this::sendStatus,
-                decoderMode
+                DECODER_MODE_READSB_CORE,
+                ecoMode
             );
             nativeReader = reader;
         }
@@ -491,48 +492,18 @@ public class BridgeService extends Service {
                 reader.run();
             } finally {
                 int exitCode = reader.exitCode();
+                boolean currentReader;
                 synchronized (sdrLock) {
-                    sdrRunning = false;
-                    sdrStarting = false;
-                    if (nativeReader == reader) {
+                    currentReader = nativeReader == reader;
+                    if (currentReader) {
+                        sdrRunning = false;
+                        sdrStarting = false;
                         nativeReader = null;
                     }
                 }
-                handleNativeReaderFinished(exitCode);
-            }
-        });
-    }
-
-    private void startExternalSdrReaderIfNeeded() {
-        RtlTcpAdsbReader reader;
-        synchronized (sdrLock) {
-            if (sdrRunning || sdrStarting) {
-                sendStatus("SDR READER ALREADY RUNNING");
-                return;
-            }
-            sdrStarting = true;
-            sdrRunning = true;
-            reader = new RtlTcpAdsbReader(
-                "127.0.0.1",
-                this::broadcastLine,
-                this::sendStatus
-            );
-            externalReader = reader;
-        }
-
-        io.execute(() -> {
-            try {
-                sdrStarting = false;
-                reader.run();
-            } finally {
-                synchronized (sdrLock) {
-                    sdrRunning = false;
-                    sdrStarting = false;
-                    if (externalReader == reader) {
-                        externalReader = null;
-                    }
+                if (currentReader) {
+                    handleNativeReaderFinished(exitCode);
                 }
-                scheduleSdrRestartIfRequested(SDR_MODE_EXTERNAL, "EXTERNAL SDR RESTART");
             }
         });
     }
@@ -554,8 +525,6 @@ public class BridgeService extends Service {
             sendStatus(log);
             if (mode == SDR_MODE_NATIVE) {
                 startNativeSdrReaderIfNeeded();
-            } else if (mode == SDR_MODE_EXTERNAL) {
-                startExternalSdrReaderIfNeeded();
             }
         });
     }
@@ -563,46 +532,43 @@ public class BridgeService extends Service {
     private void handleNativeReaderFinished(int exitCode) {
         if (requestedSdrMode != SDR_MODE_NATIVE || !running) return;
 
-        if (isNativeFailureForFallback(exitCode)) {
+        if (isNativeFailure(exitCode)) {
             consecutiveNativeFailures += 1;
-            sendStatus("NATIVE SDR USB LOST " + exitCode + " | RETRY " + consecutiveNativeFailures + "/" + NATIVE_FAILURES_BEFORE_FALLBACK);
-            if (consecutiveNativeFailures >= NATIVE_FAILURES_BEFORE_FALLBACK) {
-                consecutiveNativeFailures = 0;
-                setRequestedSdrMode(SDR_MODE_EXTERNAL);
-                sendStatus("NATIVE SDR FALLBACK REQUESTED");
-                startExternalSdrReaderIfNeeded();
-                return;
-            }
+            long retryDelayMs = nativeRetryDelayMs(consecutiveNativeFailures);
+            sendStatus("READSB SDR USB LOST " + exitCode + " | RETRY IN " + (retryDelayMs / 1000L) + "S");
+            scheduleSdrRestartIfRequested(SDR_MODE_NATIVE, "READSB SDR RESTART", retryDelayMs);
+            return;
         } else if (exitCode == NativeAdsbReader.EXIT_NO_DEVICE) {
-            sendStatus("NATIVE SDR WAIT DONGLE");
+            sendStatus("NATIVE SDR WAIT DONGLE | READSB AUTO RESUME");
+            return;
         } else if (exitCode == NativeAdsbReader.EXIT_NO_PERMISSION) {
             sendStatus("NATIVE SDR WAIT USB PERMISSION");
+            return;
         }
 
         scheduleSdrRestartIfRequested(SDR_MODE_NATIVE, "NATIVE SDR RESTART");
     }
 
-    private boolean isNativeFailureForFallback(int exitCode) {
+    private boolean isNativeFailure(int exitCode) {
         return exitCode < 0 &&
             exitCode != NativeAdsbReader.EXIT_NO_DEVICE &&
             exitCode != NativeAdsbReader.EXIT_NO_PERMISSION;
     }
 
+    static long nativeRetryDelayMs(int consecutiveFailures) {
+        int shift = Math.max(0, Math.min(consecutiveFailures - 1, 5));
+        return Math.min(MAX_SDR_RESTART_DELAY_MS, SDR_RESTART_DELAY_MS << shift);
+    }
+
     private void stopSdrReader() {
-        RtlTcpAdsbReader externalToStop;
         NativeAdsbReader nativeToStop;
         synchronized (sdrLock) {
             sdrRunning = false;
             sdrStarting = false;
             consecutiveNativeFailures = 0;
             aircraftStore.clear();
-            externalToStop = externalReader;
             nativeToStop = nativeReader;
-            externalReader = null;
             nativeReader = null;
-        }
-        if (externalToStop != null) {
-            externalToStop.stop();
         }
         if (nativeToStop != null) {
             nativeToStop.stop();
@@ -650,19 +616,23 @@ public class BridgeService extends Service {
         writeStatusLogcat(log);
         long nowMs = System.currentTimeMillis();
         if (log != null && (log.startsWith("CLIENTS ") || log.startsWith("ADSB FRAMES "))) {
-            if (nowMs - lastClientStatusBroadcastMs < CLIENT_STATUS_BROADCAST_MS) return;
+            long broadcastIntervalMs = ecoMode
+                ? ECO_CLIENT_STATUS_BROADCAST_MS
+                : NORMAL_CLIENT_STATUS_BROADCAST_MS;
+            if (nowMs - lastClientStatusBroadcastMs < broadcastIntervalMs) return;
             lastClientStatusBroadcastMs = nowMs;
         }
         Intent status = new Intent(ACTION_STATUS)
             .setPackage(getPackageName())
             .putExtra(EXTRA_SERVER, serverStatus + " | " + aircraftJsonStatus)
             .putExtra(EXTRA_CLIENTS, clients.size())
+            .putExtra(EXTRA_ECO_MODE, ecoMode)
+            .putExtra(EXTRA_SDR_RUNNING, sdrRunning)
             .putExtra(EXTRA_LOG, log);
         sendBroadcast(status);
     }
 
     private void writeStatusLogcat(String log) {
-        if (!BuildConfig.DEBUG) return;
         if (log == null || log.trim().isEmpty()) return;
 
         long nowMs = System.currentTimeMillis();
@@ -679,6 +649,7 @@ public class BridgeService extends Service {
             TAG,
             log + " | mode=" + sdrModeName(requestedSdrMode) +
                 " | decoder=" + decoderModeName(decoderMode) +
+                " | profile=" + (ecoMode ? "eco" : "normal") +
                 " | sdrRunning=" + sdrRunning +
                 " | clients=" + clients.size()
         );
@@ -686,14 +657,7 @@ public class BridgeService extends Service {
 
     private String sdrModeName(int mode) {
         if (mode == SDR_MODE_NATIVE) return "native";
-        if (mode == SDR_MODE_EXTERNAL) return "external";
         return "none";
-    }
-
-    private int sanitizeDecoderMode(int mode) {
-        if (mode == DECODER_MODE_LEGACY_JAVA) return DECODER_MODE_LEGACY_JAVA;
-        if (mode == DECODER_MODE_NATIVE_FAST) return DECODER_MODE_NATIVE_FAST;
-        return DECODER_MODE_READSB_CORE;
     }
 
     private String decoderModeName(int mode) {

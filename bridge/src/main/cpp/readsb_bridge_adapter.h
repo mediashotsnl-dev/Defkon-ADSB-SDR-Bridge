@@ -14,11 +14,16 @@ typedef struct ReadsbBridgeMessage {
     int correctedbits;
     int has_callsign;
     char callsign[16];
+    int has_category;
+    int category;
     int has_altitude;
     int altitude_ft;
     int has_velocity;
     int speed_kt;
     int track_deg;
+    int has_vertical_rate;
+    int vertical_rate_fpm;
+    int vertical_rate_is_baro;
     int has_cpr;
     int cpr_odd;
     int cpr_lat;

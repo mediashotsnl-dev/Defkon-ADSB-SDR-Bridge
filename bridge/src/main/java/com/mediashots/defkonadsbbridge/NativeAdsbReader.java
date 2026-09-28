@@ -18,7 +18,8 @@ final class NativeAdsbReader implements Runnable {
     static final int EXIT_CORE_OPEN_FAILED = -1004;
     static final int EXIT_TUNE_FAILED = -1005;
 
-    private static final int BUFFER_SIZE = 32 * 1024;
+    private static final int NORMAL_BUFFER_SIZE = 32 * 1024;
+    private static final int ECO_BUFFER_SIZE = 64 * 1024;
     private static final int READSB_SAMPLE_RATE_HZ = 2_400_000;
     private static final int TWO_SAMPLE_DECODER_RATE_HZ = 2_000_000;
     private static final int LIBUSB_TIMEOUT = -7;
@@ -29,6 +30,7 @@ final class NativeAdsbReader implements Runnable {
     private final RtlTcpAdsbReader.StatusSink statusSink;
     private final RtlTcpAdsbReader decoder;
     private final int decoderMode;
+    private final boolean ecoMode;
     private final AtomicBoolean stopStarted = new AtomicBoolean(false);
     private volatile boolean running = true;
     private volatile int exitCode = EXIT_OK;
@@ -38,12 +40,14 @@ final class NativeAdsbReader implements Runnable {
         Context context,
         RtlTcpAdsbReader.LineSink lineSink,
         RtlTcpAdsbReader.StatusSink statusSink,
-        int decoderMode
+        int decoderMode,
+        boolean ecoMode
     ) {
         this.context = context.getApplicationContext();
         this.lineSink = lineSink;
         this.statusSink = statusSink;
         this.decoderMode = decoderMode;
+        this.ecoMode = ecoMode;
         this.decoder = new RtlTcpAdsbReader("native", lineSink, statusSink);
     }
 
@@ -128,9 +132,10 @@ final class NativeAdsbReader implements Runnable {
         }
 
         statusSink.onStatus(useNativeDecoder
-            ? "NATIVE SDR TUNED 1090.000 MHz | " + sampleRateHz + " SPS | DECODER " + decoderModeLabel()
+            ? "NATIVE SDR TUNED 1090.000 MHz | " + sampleRateHz + " SPS | DECODER " + decoderModeLabel() +
+                " | PROFILE " + (ecoMode ? "ECO" : "NORMAL")
             : "NATIVE SDR TUNED 1090.000 MHz | " + sampleRateHz + " SPS | DECODER LEGACY JAVA");
-        byte[] buffer = new byte[BUFFER_SIZE];
+        byte[] buffer = new byte[bufferSizeForEcoMode(ecoMode)];
         int consecutiveReadTimeouts = 0;
         while (running) {
             int read = NativeRtlSdrDriver.readSamples(buffer, buffer.length);
@@ -189,6 +194,10 @@ final class NativeAdsbReader implements Runnable {
         return decoderMode == BridgeService.DECODER_MODE_READSB_CORE
             ? READSB_SAMPLE_RATE_HZ
             : TWO_SAMPLE_DECODER_RATE_HZ;
+    }
+
+    static int bufferSizeForEcoMode(boolean ecoMode) {
+        return ecoMode ? ECO_BUFFER_SIZE : NORMAL_BUFFER_SIZE;
     }
 
     private UsbDevice firstRtlSdrDevice(UsbManager usbManager) {

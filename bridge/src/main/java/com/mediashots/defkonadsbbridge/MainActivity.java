@@ -4,16 +4,21 @@ import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.PendingIntent;
-import android.content.ActivityNotFoundException;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.content.res.ColorStateList;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.Canvas;
 import android.graphics.Paint;
+import android.graphics.RectF;
+import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.StateListDrawable;
 import android.hardware.usb.UsbDevice;
 import android.hardware.usb.UsbManager;
 import android.net.Uri;
@@ -44,18 +49,16 @@ import java.util.Map;
 public class MainActivity extends Activity {
     private static final String TAG = "DefkonAdsbBridge";
     private static final String USB_PERMISSION_ACTION = "com.mediashots.defkonadsbbridge.USB_PERMISSION";
-    private static final int SDR_DRIVER_REQUEST = 1091;
-    private static final String RTL_SDR_DRIVER_PACKAGE = "marto.rtl_tcp_andro";
-    private static final String SOURCE_CODE_URL =
-        "https://github.com/mediashotsnl-dev/Defkon-ADSB-SDR-Bridge/tree/bridge-v0.1.1";
+    private static final String SOURCE_CODE_URL = BuildConfig.BRIDGE_SOURCE_URL;
     private static final String DEFKON_PACKAGE = "com.mediashots.defkoniv";
     private static final String DEFKON_ACTION_USE_ADSB_SDR = "com.mediashots.defkoniv.action.USE_ADSB_SDR";
     private static final String DEFKON_EXTRA_USE_ADSB_SDR = "com.mediashots.defkoniv.extra.USE_ADSB_SDR";
     private static final String PREFS = "bridge_diagnostics";
     private static final String LAST_CRASH = "last_crash";
     private static final String PREF_DECODER_MODE = "decoder_mode";
+    private static final String PREF_ECO_MODE = "eco_mode";
     private static final String PREF_DECODER_DEFAULT_REV = "decoder_default_rev";
-    private static final int DECODER_DEFAULT_REV_READSB_CORE = 2;
+    private static final int DECODER_DEFAULT_REV_READSB_CORE = 3;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final List<String> logLines = new ArrayList<>();
@@ -69,17 +72,17 @@ public class MainActivity extends Activity {
     private TextView decoderStatus;
     private TextView logView;
     private Button primaryAction;
-    private Button decoderModeButton;
+    private Button normalReadsbButton;
+    private Button ecoReadsbButton;
     private Button advancedToggle;
     private LinearLayout advancedControls;
     private boolean receiverRegistered;
     private boolean serviceStatusReceiverRegistered;
-    private boolean sdrDriverLaunchAttempted;
     private boolean advancedVisible;
     private boolean advancedUnlocked;
-    private int decoderMode = BridgeService.DECODER_MODE_READSB_CORE;
+    private boolean ecoMode;
+    private boolean bridgeRunning;
     private long lastDefkonLaunchMs;
-    private long lastFallbackAutoLaunchMs;
     private long lastCustomerFlowStartMs;
     private boolean defkonLaunchRequested;
     private boolean customerFlowQueued;
@@ -109,7 +112,7 @@ public class MainActivity extends Activity {
                     queueCustomerFlow(250L);
                 } else {
                     setText(mainStatus, "STATUS | USB ACCESS DENIED");
-                    setText(primaryAction, "ALLOW USB");
+                    setPrimaryButtonState("ALLOW USB", false);
                     setText(decoderStatus, "SIGNAL | USB PERMISSION DENIED");
                     appendLog("USB PERMISSION DENIED");
                 }
@@ -130,15 +133,20 @@ public class MainActivity extends Activity {
             String server = intent.getStringExtra(BridgeService.EXTRA_SERVER);
             int clients = intent.getIntExtra(BridgeService.EXTRA_CLIENTS, 0);
             String log = intent.getStringExtra(BridgeService.EXTRA_LOG);
+            bridgeRunning = intent.getBooleanExtra(BridgeService.EXTRA_SDR_RUNNING, bridgeRunning);
+            boolean serviceEcoMode = intent.getBooleanExtra(BridgeService.EXTRA_ECO_MODE, ecoMode);
+            if (serviceEcoMode != ecoMode) {
+                ecoMode = serviceEcoMode;
+                persistReadsbProfile();
+                updateReadsbProfileButtons();
+            }
             if (server != null) updateServerStatus(server);
             setText(clientStatus, clients > 0 ? "DEFKON | CONNECTED" : "DEFKON | WAITING");
             if (log != null && !log.trim().isEmpty()) {
                 appendLog(log);
                 updateMainStatusFromLog(log);
-                if (log.toUpperCase(Locale.US).contains("NATIVE SDR FALLBACK REQUESTED")) {
-                    handleNativeFallbackRequested();
-                }
-                if (log.startsWith("SDR ") || log.startsWith("ADSB ") || log.startsWith("NATIVE ")) {
+                if (log.startsWith("SDR ") || log.startsWith("ADSB ") ||
+                    log.startsWith("NATIVE ") || log.startsWith("READSB ")) {
                     setText(decoderStatus, "SIGNAL | " + friendlySignalStatus(log));
                 }
             }
@@ -150,15 +158,11 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         BridgeCrashLogger.install(this);
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
-        if (prefs.getInt(PREF_DECODER_DEFAULT_REV, 0) < DECODER_DEFAULT_REV_READSB_CORE) {
-            decoderMode = BridgeService.DECODER_MODE_READSB_CORE;
-            prefs.edit()
-                .putInt(PREF_DECODER_MODE, decoderMode)
-                .putInt(PREF_DECODER_DEFAULT_REV, DECODER_DEFAULT_REV_READSB_CORE)
-                .apply();
-        } else {
-            decoderMode = prefs.getInt(PREF_DECODER_MODE, BridgeService.DECODER_MODE_READSB_CORE);
-        }
+        ecoMode = prefs.getBoolean(PREF_ECO_MODE, false);
+        prefs.edit()
+            .putInt(PREF_DECODER_MODE, BridgeService.DECODER_MODE_READSB_CORE)
+            .putInt(PREF_DECODER_DEFAULT_REV, DECODER_DEFAULT_REV_READSB_CORE)
+            .apply();
         usbManager = (UsbManager) getSystemService(USB_SERVICE);
         setContentView(buildUi());
         requestNotificationPermissionIfNeeded();
@@ -312,20 +316,55 @@ public class MainActivity extends Activity {
         primaryAction = button("START ADS-B", accent, background);
         primaryAction.setOnClickListener(v -> {
             defkonLaunchRequested = true;
+            setPrimaryButtonState("STARTING READSB...", true);
             startCustomerFlow();
         });
-        root.addView(primaryAction);
 
         root.addView(card(dongleStatus, panel));
         root.addView(card(serverStatus, panel));
         root.addView(card(clientStatus, panel));
         root.addView(card(decoderStatus, panel));
 
+        root.addView(primaryAction);
+
         Button closeBridge = button("STOP ADS-B AND EXIT BRIDGE", accent, background);
         closeBridge.setOnClickListener(v -> closeBridgeApp());
         root.addView(closeBridge);
 
-        Button openSource = button("OPEN SOURCE AND LICENSES", accent, background);
+        root.addView(sectionHeader("READSB CORE PROFILE", accent));
+
+        normalReadsbButton = button("NORMAL READSB CORE", accent, background);
+        normalReadsbButton.setOnClickListener(v -> selectReadsbProfile(false));
+        root.addView(normalReadsbButton);
+
+        ecoReadsbButton = button("ECO READSB CORE", accent, background);
+        ecoReadsbButton.setOnClickListener(v -> selectReadsbProfile(true));
+        root.addView(ecoReadsbButton);
+
+        TextView profileInfo = textView(
+            "Normal: fastest status updates. Eco: lower app overhead with the same 2.4 MS/s reception.",
+            11,
+            text,
+            false
+        );
+        root.addView(profileInfo);
+        updateReadsbProfileButtons();
+
+        AccessibleTextView openSource = textView("Open source and licenses", 10, accent, false);
+        openSource.setGravity(Gravity.CENTER);
+        openSource.setPaintFlags(openSource.getPaintFlags() | Paint.UNDERLINE_TEXT_FLAG);
+        openSource.setClickable(true);
+        openSource.setFocusable(true);
+        openSource.setPadding(12, 22, 12, 12);
+        openSource.setOnTouchListener((view, event) -> {
+            if (event.getAction() == MotionEvent.ACTION_DOWN) {
+                view.setAlpha(0.45f);
+            } else if (event.getAction() == MotionEvent.ACTION_UP ||
+                event.getAction() == MotionEvent.ACTION_CANCEL) {
+                view.setAlpha(1f);
+            }
+            return false;
+        });
         openSource.setOnClickListener(v -> showOpenSourceInfo());
         root.addView(openSource);
 
@@ -355,23 +394,11 @@ public class MainActivity extends Activity {
         permission.setOnClickListener(v -> requestUsbPermission());
         advancedControls.addView(permission);
 
-        advancedControls.addView(sectionHeader("SDR MODES", accent));
+        advancedControls.addView(sectionHeader("READSB CORE", accent));
 
-        decoderModeButton = button(decoderModeButtonText(), accent, background);
-        decoderModeButton.setOnClickListener(v -> toggleDecoderMode());
-        advancedControls.addView(decoderModeButton);
-
-        Button nativeDriver = button("START BUILT-IN 1090 SDR", accent, background);
+        Button nativeDriver = button("START READSB CORE", accent, background);
         nativeDriver.setOnClickListener(v -> startBridgeService(BridgeService.ACTION_START_NATIVE_SDR));
         advancedControls.addView(nativeDriver);
-
-        Button installDriver = button("INSTALL FALLBACK RTL-SDR DRIVER", accent, background);
-        installDriver.setOnClickListener(v -> openRtlSdrDriverInstallPage());
-        advancedControls.addView(installDriver);
-
-        Button driver = button("START FALLBACK 1090 SDR", accent, background);
-        driver.setOnClickListener(v -> startSdrDriver());
-        advancedControls.addView(driver);
 
         advancedControls.addView(sectionHeader("DIAGNOSTICS", accent));
 
@@ -506,10 +533,33 @@ public class MainActivity extends Activity {
     private Button button(String label, int accent, int background) {
         Button button = new Button(this);
         button.setText(label);
-        button.setTextColor(accent);
+        int pressed = Color.rgb(35, 150, 65);
+        int[][] textStates = new int[][]{
+            new int[]{android.R.attr.state_pressed},
+            new int[]{android.R.attr.state_selected},
+            new int[]{}
+        };
+        int[] textColors = new int[]{Color.BLACK, Color.BLACK, accent};
+        button.setTextColor(new ColorStateList(textStates, textColors));
         button.setTextSize(12);
         button.setTypeface(android.graphics.Typeface.MONOSPACE, android.graphics.Typeface.BOLD);
-        button.setBackgroundColor(background);
+        StateListDrawable states = new StateListDrawable();
+        states.addState(
+            new int[]{android.R.attr.state_pressed},
+            buttonBackground(pressed, pressed, 2)
+        );
+        states.addState(
+            new int[]{android.R.attr.state_selected},
+            buttonBackground(accent, accent, 2)
+        );
+        states.addState(
+            new int[]{},
+            buttonBackground(background, accent, 2)
+        );
+        button.setBackground(states);
+        button.setMinHeight(56);
+        button.setPadding(18, 8, 18, 8);
+        button.setStateListAnimator(null);
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
@@ -517,6 +567,53 @@ public class MainActivity extends Activity {
         params.setMargins(0, 12, 0, 0);
         button.setLayoutParams(params);
         return button;
+    }
+
+    private GradientDrawable buttonBackground(int fillColor, int strokeColor, int strokeWidth) {
+        GradientDrawable drawable = new GradientDrawable();
+        drawable.setColor(fillColor);
+        drawable.setStroke(strokeWidth, strokeColor);
+        drawable.setCornerRadius(10f);
+        return drawable;
+    }
+
+    private void setPrimaryButtonState(String label, boolean active) {
+        if (primaryAction == null) return;
+        mainHandler.post(() -> {
+            primaryAction.setText(label);
+            primaryAction.setSelected(active);
+        });
+    }
+
+    private void persistReadsbProfile() {
+        getSharedPreferences(PREFS, MODE_PRIVATE)
+            .edit()
+            .putInt(PREF_DECODER_MODE, BridgeService.DECODER_MODE_READSB_CORE)
+            .putBoolean(PREF_ECO_MODE, ecoMode)
+            .apply();
+    }
+
+    private void selectReadsbProfile(boolean useEcoMode) {
+        ecoMode = useEcoMode;
+        persistReadsbProfile();
+        updateReadsbProfileButtons();
+        setText(decoderStatus, "SIGNAL | READSB " + (ecoMode ? "ECO" : "NORMAL") + " SELECTED");
+        appendLog("READSB PROFILE " + (ecoMode ? "ECO" : "NORMAL"));
+        if (bridgeRunning) {
+            setPrimaryButtonState("APPLYING " + (ecoMode ? "ECO" : "NORMAL") + "...", true);
+            startBridgeService(BridgeService.ACTION_START_NATIVE_SDR);
+        }
+    }
+
+    private void updateReadsbProfileButtons() {
+        if (normalReadsbButton != null) {
+            normalReadsbButton.setSelected(!ecoMode);
+            normalReadsbButton.setText(ecoMode ? "NORMAL READSB CORE" : "✓ NORMAL READSB CORE");
+        }
+        if (ecoReadsbButton != null) {
+            ecoReadsbButton.setSelected(ecoMode);
+            ecoReadsbButton.setText(ecoMode ? "✓ ECO READSB CORE" : "ECO READSB CORE");
+        }
     }
 
     private void queueCustomerFlow(long delayMs) {
@@ -539,7 +636,7 @@ public class MainActivity extends Activity {
             refreshSdrDriverStatus();
             if (usbManager == null) {
                 setText(mainStatus, "STATUS | USB NOT AVAILABLE");
-                setText(primaryAction, "START ADS-B");
+                setPrimaryButtonState("START ADS-B", false);
                 appendLog("USB MANAGER NOT AVAILABLE");
                 return;
             }
@@ -547,65 +644,35 @@ public class MainActivity extends Activity {
             UsbDevice device = firstRtlSdrDevice();
             if (device == null) {
                 setText(mainStatus, "STATUS | CONNECT RTL-SDR");
-                setText(primaryAction, "START ADS-B");
+                setPrimaryButtonState("START ADS-B", false);
                 scanUsbDevice();
                 return;
             }
 
             if (!usbManager.hasPermission(device)) {
                 setText(mainStatus, "STATUS | ALLOW USB ACCESS");
-                setText(primaryAction, "ALLOW USB");
+                setPrimaryButtonState("ALLOW USB", true);
                 requestUsbPermission();
                 return;
             }
 
             setText(mainStatus, "STATUS | STARTING ADS-B");
-            setText(primaryAction, "STARTING");
+            setPrimaryButtonState("STARTING " + (ecoMode ? "ECO" : "NORMAL") + " READSB...", true);
             if (nativeCoreReady()) {
-                setText(decoderStatus, "SIGNAL | STARTING BUILT-IN SDR");
+                setText(decoderStatus, "SIGNAL | STARTING READSB " + (ecoMode ? "ECO" : "NORMAL"));
                 startBridgeService(BridgeService.ACTION_START_NATIVE_SDR);
-                launchDefkonSdrMode();
-            } else if (isRtlSdrDriverInstalled()) {
-                setText(decoderStatus, "SIGNAL | STARTING FALLBACK SDR");
-                startSdrDriver();
             } else {
-                setText(mainStatus, "STATUS | DRIVER INSTALL NEEDED");
-                setText(decoderStatus, "SIGNAL | INSTALL FALLBACK DRIVER");
-                appendLog("FALLBACK RTL-SDR DRIVER APP NOT INSTALLED");
-                openRtlSdrDriverInstallPage();
+                setText(mainStatus, "STATUS | READSB CORE NOT READY");
+                setText(decoderStatus, "SIGNAL | READSB CORE ERROR");
+                setPrimaryButtonState("START ADS-B", false);
+                appendLog("READSB CORE NOT READY");
             }
         } catch (RuntimeException error) {
             setText(mainStatus, "STATUS | CHECK SETUP");
             setText(decoderStatus, "SIGNAL | START ERROR");
+            setPrimaryButtonState("START ADS-B", false);
             appendLog("START ERROR " + error.getClass().getSimpleName());
         }
-    }
-
-    private void toggleDecoderMode() {
-        if (decoderMode == BridgeService.DECODER_MODE_READSB_CORE) {
-            decoderMode = BridgeService.DECODER_MODE_NATIVE_FAST;
-        } else if (decoderMode == BridgeService.DECODER_MODE_NATIVE_FAST) {
-            decoderMode = BridgeService.DECODER_MODE_LEGACY_JAVA;
-        } else {
-            decoderMode = BridgeService.DECODER_MODE_READSB_CORE;
-        }
-        getSharedPreferences(PREFS, MODE_PRIVATE)
-            .edit()
-            .putInt(PREF_DECODER_MODE, decoderMode)
-            .apply();
-        setText(decoderModeButton, decoderModeButtonText());
-        setText(decoderStatus, "SIGNAL | DECODER " + decoderModeLabel());
-        appendLog("DECODER MODE " + decoderModeLabel());
-    }
-
-    private String decoderModeButtonText() {
-        return "DECODER: " + decoderModeLabel();
-    }
-
-    private String decoderModeLabel() {
-        if (decoderMode == BridgeService.DECODER_MODE_LEGACY_JAVA) return "LEGACY JAVA";
-        if (decoderMode == BridgeService.DECODER_MODE_NATIVE_FAST) return "NATIVE FAST";
-        return "READSB CORE";
     }
 
     private void toggleAdvanced() {
@@ -641,22 +708,20 @@ public class MainActivity extends Activity {
 
     private void onUsbDeviceAttached(UsbDevice device) {
         if (device != null && !isLikelyRtlSdr(device.getVendorId(), device.getProductId())) return;
-        sdrDriverLaunchAttempted = false;
         defkonLaunchRequested = true;
         setText(mainStatus, "STATUS | RTL-SDR CONNECTED");
-        setText(primaryAction, "STARTING");
+        setPrimaryButtonState("STARTING READSB...", true);
         setText(dongleStatus, "DONGLE | DETECTED");
-        setText(decoderStatus, "SIGNAL | STARTING ADS-B");
+        setText(decoderStatus, "SIGNAL | STARTING READSB");
         appendLog("USB RTL-SDR ATTACHED");
         queueCustomerFlow(500L);
     }
 
     private void onUsbDeviceDetached(UsbDevice device) {
         if (device != null && !isLikelyRtlSdr(device.getVendorId(), device.getProductId())) return;
-        sdrDriverLaunchAttempted = false;
-        startBridgeService(BridgeService.ACTION_STOP_SDR);
+        startBridgeService(BridgeService.ACTION_USB_DETACHED);
         setText(mainStatus, "STATUS | CONNECT RTL-SDR");
-        setText(primaryAction, "START ADS-B");
+        setPrimaryButtonState("WAITING FOR RTL-SDR", false);
         setText(dongleStatus, "DONGLE | NOT CONNECTED");
         setText(decoderStatus, "SIGNAL | WAIT DONGLE");
         appendLog("USB RTL-SDR DETACHED");
@@ -669,14 +734,14 @@ public class MainActivity extends Activity {
             if (usbManager == null) {
                 setText(mainStatus, "STATUS | USB NOT AVAILABLE");
                 setText(dongleStatus, "DONGLE | USB MANAGER N/A");
-                setText(primaryAction, "START ADS-B");
+                setPrimaryButtonState("START ADS-B", false);
                 return;
             }
 
             UsbDevice device = firstRtlSdrDevice();
             if (device == null) {
                 setText(mainStatus, "STATUS | CONNECT RTL-SDR");
-                setText(primaryAction, "START ADS-B");
+                setPrimaryButtonState("START ADS-B", false);
                 setText(dongleStatus, "DONGLE | NOT CONNECTED");
                 setText(decoderStatus, "SIGNAL | WAIT DONGLE");
                 appendLog("NO RTL-SDR DEVICE FOUND");
@@ -685,30 +750,29 @@ public class MainActivity extends Activity {
 
             String label = deviceLabel(device);
             if (usbManager.hasPermission(device)) {
-                setText(mainStatus, "STATUS | READY");
-                setText(primaryAction, "START ADS-B");
+                setText(mainStatus, bridgeRunning ? "STATUS | LISTENING 1090 MHZ" : "STATUS | READY");
+                setPrimaryButtonState(bridgeRunning ? "RUNNING READSB" : "START ADS-B", bridgeRunning);
                 setText(dongleStatus, "DONGLE | READY " + label);
                 appendLog("RTL-SDR READY " + label);
-                if (nativeCoreReady()) {
-                    setText(mainStatus, "STATUS | STARTING ADS-B");
-                    setText(primaryAction, "STARTING");
-                    setText(decoderStatus, "SIGNAL | STARTING BUILT-IN SDR");
-                    startBridgeService(BridgeService.ACTION_START_NATIVE_SDR);
-                    launchDefkonSdrMode();
-                } else {
-                    setText(decoderStatus, isRtlSdrDriverInstalled() ? "SIGNAL | STARTING FALLBACK SDR" : "SIGNAL | INSTALL FALLBACK DRIVER");
-                    startSdrDriverIfNeeded();
+                setText(
+                    decoderStatus,
+                    nativeCoreReady()
+                        ? "SIGNAL | READSB " + (ecoMode ? "ECO" : "NORMAL") + " READY"
+                        : "SIGNAL | READSB CORE ERROR"
+                );
+                if (defkonLaunchRequested && !customerFlowQueued) {
+                    queueCustomerFlow(250L);
                 }
             } else {
                 setText(mainStatus, "STATUS | ALLOW USB ACCESS");
-                setText(primaryAction, "ALLOW USB");
+                setPrimaryButtonState("ALLOW USB", false);
                 setText(dongleStatus, "DONGLE | NEED PERMISSION " + label);
                 setText(decoderStatus, "SIGNAL | USB PERMISSION");
                 appendLog("RTL-SDR NEEDS USB PERMISSION " + label);
             }
         } catch (RuntimeException error) {
             setText(mainStatus, "STATUS | USB ERROR");
-            setText(primaryAction, "START ADS-B");
+            setPrimaryButtonState("START ADS-B", false);
             setText(dongleStatus, "DONGLE | SCAN ERROR");
             setText(decoderStatus, "SIGNAL | USB ERROR");
             appendLog("USB SCAN ERROR " + error.getClass().getSimpleName());
@@ -731,7 +795,7 @@ public class MainActivity extends Activity {
             );
             usbManager.requestPermission(device, intent);
             setText(mainStatus, "STATUS | ALLOW USB ACCESS");
-            setText(primaryAction, "ALLOW USB");
+            setPrimaryButtonState("ALLOW USB", false);
             appendLog("USB PERMISSION REQUESTED");
         } catch (RuntimeException error) {
             setText(mainStatus, "STATUS | USB PERMISSION ERROR");
@@ -741,101 +805,12 @@ public class MainActivity extends Activity {
 
     private void refreshSdrDriverStatus() {
         String nativeStatus = NativeRtlSdrDriver.nativeStatus();
-        String prefix = nativeCoreReady() ? "BUILT-IN SDR | READY" : "BUILT-IN SDR | GPL CORE NEEDED";
-        if (isRtlSdrDriverInstalled()) {
-            setText(driverStatus, prefix + " | FALLBACK INSTALLED | " + nativeStatus);
-        } else {
-            setText(driverStatus, prefix + " | FALLBACK NOT INSTALLED | " + nativeStatus);
-        }
+        String prefix = nativeCoreReady() ? "READSB CORE | READY" : "READSB CORE | NOT READY";
+        setText(driverStatus, prefix + " | " + nativeStatus);
     }
 
     private boolean nativeCoreReady() {
         return NativeRtlSdrDriver.isCoreLinked();
-    }
-
-    @SuppressWarnings("deprecation")
-    private boolean isRtlSdrDriverInstalled() {
-        try {
-            getPackageManager().getPackageInfo(RTL_SDR_DRIVER_PACKAGE, 0);
-            return true;
-        } catch (PackageManager.NameNotFoundException error) {
-            return false;
-        }
-    }
-
-    private void startSdrDriverIfNeeded() {
-        if (sdrDriverLaunchAttempted) return;
-        sdrDriverLaunchAttempted = true;
-        mainHandler.postDelayed(this::startSdrDriver, 400L);
-    }
-
-    private void handleNativeFallbackRequested() {
-        setText(mainStatus, "STATUS | SWITCHING SDR");
-        setText(primaryAction, "RUNNING");
-        setText(decoderStatus, "SIGNAL | STARTING FALLBACK SDR");
-
-        long now = System.currentTimeMillis();
-        if (now - lastFallbackAutoLaunchMs < 15_000L) return;
-        lastFallbackAutoLaunchMs = now;
-        sdrDriverLaunchAttempted = false;
-        startSdrDriverIfNeeded();
-    }
-
-    private void startSdrDriver() {
-        try {
-            refreshSdrDriverStatus();
-            if (!isRtlSdrDriverInstalled()) {
-                sdrDriverLaunchAttempted = false;
-                setText(mainStatus, "STATUS | DRIVER INSTALL NEEDED");
-                setText(decoderStatus, "SIGNAL | INSTALL FALLBACK DRIVER");
-                appendLog("FALLBACK RTL-SDR DRIVER APP NOT INSTALLED");
-                openRtlSdrDriverInstallPage();
-                return;
-            }
-            String args = String.format(
-                Locale.US,
-                "iqsrc://-a 127.0.0.1 -p %d -s %d -f %d",
-                RtlTcpAdsbReader.port(),
-                RtlTcpAdsbReader.sampleRateHz(),
-                RtlTcpAdsbReader.frequencyHz()
-            );
-            Intent intent = new Intent(Intent.ACTION_VIEW)
-                .setData(Uri.parse(args))
-                .setPackage(RTL_SDR_DRIVER_PACKAGE);
-            setText(mainStatus, "STATUS | OPENING SDR DRIVER");
-            setText(primaryAction, "STARTING");
-            setText(decoderStatus, "SIGNAL | OPEN SDR DRIVER");
-            appendLog("OPEN SDR DRIVER 1090.000 MHz");
-            startActivityForResult(intent, SDR_DRIVER_REQUEST);
-        } catch (ActivityNotFoundException error) {
-            setText(mainStatus, "STATUS | DRIVER INSTALL NEEDED");
-            setText(decoderStatus, "SIGNAL | INSTALL FALLBACK DRIVER");
-            appendLog("FALLBACK RTL-SDR DRIVER APP NOT INSTALLED");
-            openRtlSdrDriverInstallPage();
-        } catch (RuntimeException error) {
-            setText(mainStatus, "STATUS | CHECK SETUP");
-            setText(decoderStatus, "SIGNAL | SDR DRIVER ERROR");
-            appendLog("SDR DRIVER ERROR " + error.getClass().getSimpleName());
-        }
-    }
-
-    private void openRtlSdrDriverInstallPage() {
-        Intent market = new Intent(
-            Intent.ACTION_VIEW,
-            Uri.parse("market://details?id=" + RTL_SDR_DRIVER_PACKAGE)
-        );
-        try {
-            startActivity(market);
-        } catch (RuntimeException ignored) {
-            try {
-                startActivity(new Intent(
-                    Intent.ACTION_VIEW,
-                    Uri.parse("https://play.google.com/store/apps/details?id=" + RTL_SDR_DRIVER_PACKAGE)
-                ));
-            } catch (RuntimeException error) {
-                appendLog("DRIVER INSTALL PAGE ERROR " + error.getClass().getSimpleName());
-            }
-        }
     }
 
     private void launchDefkonSdrMode() {
@@ -857,28 +832,6 @@ public class MainActivity extends Activity {
             appendLog("OPEN DEFKON | ADS-B SDR MODE");
         } catch (RuntimeException error) {
             appendLog("OPEN DEFKON ERROR " + error.getClass().getSimpleName());
-        }
-    }
-
-    @Override
-    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode != SDR_DRIVER_REQUEST) return;
-
-        if (resultCode == RESULT_OK) {
-            setText(mainStatus, "STATUS | CONNECTING SDR");
-            setText(primaryAction, "STARTING");
-            setText(decoderStatus, "SIGNAL | SDR TCP CONNECT");
-            appendLog("SDR DRIVER READY | TCP 127.0.0.1:" + RtlTcpAdsbReader.port());
-            startBridgeService(BridgeService.ACTION_START_EXTERNAL_SDR);
-            launchDefkonSdrMode();
-        } else {
-            sdrDriverLaunchAttempted = false;
-            String detail = data != null ? data.getStringExtra("detailed_exception_message") : null;
-            setText(mainStatus, "STATUS | CHECK SETUP");
-            setText(primaryAction, "START ADS-B");
-            setText(decoderStatus, "SIGNAL | SDR DRIVER FAILED");
-            appendLog(detail == null || detail.trim().isEmpty() ? "SDR DRIVER FAILED" : detail);
         }
     }
 
@@ -911,8 +864,11 @@ public class MainActivity extends Activity {
         try {
             Intent intent = new Intent(this, BridgeService.class)
                 .setAction(action)
-                .putExtra(BridgeService.EXTRA_DECODER_MODE, decoderMode);
-            startForegroundService(intent);
+                .putExtra(BridgeService.EXTRA_DECODER_MODE, BridgeService.DECODER_MODE_READSB_CORE)
+                .putExtra(BridgeService.EXTRA_ECO_MODE, ecoMode);
+            // Activity actions originate while the UI is visible. The service promotes itself
+            // only after it has permission to a real USB SDR device.
+            startService(intent);
         } catch (RuntimeException error) {
             appendLog("SERVICE START ERROR " + error.getClass().getSimpleName());
         }
@@ -932,7 +888,8 @@ public class MainActivity extends Activity {
         } else if (server.contains("STOPPED")) {
             setText(serverStatus, "BRIDGE | STOPPED");
             setText(mainStatus, "STATUS | STOPPED");
-            setText(primaryAction, "START ADS-B");
+            bridgeRunning = false;
+            setPrimaryButtonState("START ADS-B", false);
         } else {
             setText(serverStatus, "BRIDGE | STARTING");
         }
@@ -942,41 +899,39 @@ public class MainActivity extends Activity {
         String status = log.toUpperCase(Locale.US);
         if (status.startsWith("ADSB FRAMES")) {
             setText(mainStatus, "STATUS | RECEIVING ADS-B");
-            setText(primaryAction, "RUNNING");
-        } else if (status.contains("FALLBACK REQUESTED")) {
-            setText(mainStatus, "STATUS | SWITCHING SDR");
-            setText(primaryAction, "RUNNING");
+            setPrimaryButtonState("RUNNING READSB", true);
+            launchDefkonSdrMode();
         } else if (status.contains("CLIENT CONNECTED")) {
             setText(mainStatus, "STATUS | DEFKON CONNECTED");
             setText(clientStatus, "DEFKON | CONNECTED");
-            setText(primaryAction, "RUNNING");
+            setPrimaryButtonState("RUNNING READSB", true);
         } else if (status.contains("SBS SERVER READY")) {
             setText(mainStatus, "STATUS | READY FOR DEFKON");
         } else if (status.contains("TUNED") || status.contains("SDR READER ALREADY RUNNING")) {
             setText(mainStatus, "STATUS | LISTENING 1090 MHZ");
-            setText(primaryAction, "RUNNING");
+            setPrimaryButtonState("RUNNING READSB", true);
+            launchDefkonSdrMode();
         } else if (status.contains("USB LOST") || status.contains("READ STOP") || status.contains("RESTART")) {
             setText(mainStatus, "STATUS | RECONNECTING SDR");
-            setText(primaryAction, "RUNNING");
+            setPrimaryButtonState("RECONNECTING READSB...", true);
         } else if (status.contains("WAIT RTL-SDR") || status.contains("WAIT DONGLE")) {
             setText(mainStatus, "STATUS | CONNECT RTL-SDR");
-            setText(primaryAction, "START ADS-B");
+            setPrimaryButtonState("WAITING FOR RTL-SDR", false);
         } else if (status.contains("USB PERMISSION")) {
             setText(mainStatus, "STATUS | ALLOW USB ACCESS");
-            setText(primaryAction, "ALLOW USB");
+            setPrimaryButtonState("ALLOW USB", false);
         } else if (status.contains("STOPPED")) {
             setText(mainStatus, "STATUS | STOPPED");
-            setText(primaryAction, "START ADS-B");
+            setPrimaryButtonState("START ADS-B", false);
         } else if (status.contains("ERROR") || status.contains("FAILED")) {
             setText(mainStatus, "STATUS | CHECK SETUP");
-            setText(primaryAction, "START ADS-B");
+            setPrimaryButtonState("START ADS-B", false);
         }
     }
 
     private String friendlySignalStatus(String log) {
         String status = log.toUpperCase(Locale.US);
         if (status.startsWith("ADSB FRAMES")) return "RECEIVING ADS-B";
-        if (status.contains("FALLBACK REQUESTED")) return "STARTING FALLBACK SDR";
         if (status.contains("USB LOST") || status.contains("READ STOP") || status.contains("RESTART")) return "RECONNECTING SDR";
         if (status.contains("WAIT RTL-SDR") || status.contains("WAIT DONGLE")) return "WAIT DONGLE";
         if (status.contains("USB PERMISSION")) return "USB PERMISSION";
@@ -1036,8 +991,8 @@ public class MainActivity extends Activity {
     private static final class GridBackgroundView extends View {
         private final Paint finePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint boldPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint ringPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint sweepPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint logoPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+        private final Bitmap bridgeLogo;
 
         GridBackgroundView(Context context) {
             super(context);
@@ -1045,11 +1000,8 @@ public class MainActivity extends Activity {
             finePaint.setStrokeWidth(1f);
             boldPaint.setColor(Color.argb(44, 69, 255, 105));
             boldPaint.setStrokeWidth(2f);
-            ringPaint.setColor(Color.argb(34, 69, 255, 105));
-            ringPaint.setStyle(Paint.Style.STROKE);
-            ringPaint.setStrokeWidth(2f);
-            sweepPaint.setColor(Color.argb(28, 69, 255, 105));
-            sweepPaint.setStrokeWidth(3f);
+            logoPaint.setAlpha(34);
+            bridgeLogo = BitmapFactory.decodeResource(context.getResources(), R.drawable.defkon_bridge);
         }
 
         @Override
@@ -1072,13 +1024,13 @@ public class MainActivity extends Activity {
                 canvas.drawLine(0, y, width, y, boldPaint);
             }
 
-            float cx = width / 2f;
-            float cy = height / 2f;
-            float maxRadius = Math.min(width, height) * 0.44f;
-            canvas.drawCircle(cx, cy, maxRadius * 0.35f, ringPaint);
-            canvas.drawCircle(cx, cy, maxRadius * 0.62f, ringPaint);
-            canvas.drawCircle(cx, cy, maxRadius * 0.88f, ringPaint);
-            canvas.drawLine(cx, cy, cx + maxRadius * 0.82f, cy - maxRadius * 0.46f, sweepPaint);
+            if (bridgeLogo == null) {
+                return;
+            }
+            float logoSize = Math.min(width * 0.90f, height * 0.62f);
+            float left = (width - logoSize) / 2f;
+            float top = (height - logoSize) / 2f;
+            canvas.drawBitmap(bridgeLogo, null, new RectF(left, top, left + logoSize, top + logoSize), logoPaint);
         }
     }
 }

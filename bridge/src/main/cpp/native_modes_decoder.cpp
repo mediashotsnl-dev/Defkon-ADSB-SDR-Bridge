@@ -31,6 +31,7 @@ constexpr int MESSAGE_SAMPLES = MESSAGE_BITS * 2;
 constexpr int DECODER_MODE_READSB_CORE = 2;
 constexpr int64_t AIRCRAFT_STATE_TTL_MS = 10 * 60 * 1000;
 constexpr int64_t AIRCRAFT_PRUNE_INTERVAL_MS = 30 * 1000;
+constexpr int64_t VERTICAL_RATE_HOLD_MS = 15 * 1000;
 constexpr size_t MAX_AIRCRAFT_STATES = 4096;
 
 const std::array<int, 88> MODES_CHECKSUM_TABLE = {
@@ -51,16 +52,22 @@ struct AircraftState {
     std::string callsign;
     bool has_lat = false;
     bool has_lon = false;
+    bool has_category = false;
     bool has_altitude = false;
     bool has_speed = false;
     bool has_track = false;
+    bool has_vertical_rate = false;
+    bool vertical_rate_is_baro = true;
     bool has_even = false;
     bool has_odd = false;
     double lat = 0.0;
     double lon = 0.0;
     int altitude_ft = 0;
+    int category = 0;
     int speed_kt = 0;
     int track_deg = 0;
+    int vertical_rate_fpm = 0;
+    int64_t vertical_rate_ms = 0;
     int even_lat = 0;
     int even_lon = 0;
     int odd_lat = 0;
@@ -367,9 +374,14 @@ std::string hex24(uint32_t value) {
 }
 
 std::string to_sbs_line(uint32_t hex, const AircraftState &state, int transmission_type, bool include_position) {
+    bool vertical_rate_fresh = state.has_vertical_rate &&
+        state.vertical_rate_ms > 0 &&
+        state.last_seen_ms - state.vertical_rate_ms >= 0 &&
+        state.last_seen_ms - state.vertical_rate_ms <= VERTICAL_RATE_HOLD_MS;
     if (transmission_type == 1 && state.callsign.empty()) return "";
     if (transmission_type == 3 && (!include_position || !state.has_lat || !state.has_lon)) return "";
-    if (transmission_type == 4 && (!state.has_speed || !state.has_track)) return "";
+    if (transmission_type == 4 &&
+        ((!state.has_speed || !state.has_track) && !vertical_rate_fresh)) return "";
 
     std::string date;
     std::string time;
@@ -388,7 +400,16 @@ std::string to_sbs_line(uint32_t hex, const AircraftState &state, int transmissi
     if (include_position && state.has_lat) out << std::fixed << std::setprecision(5) << state.lat;
     out << ",";
     if (include_position && state.has_lon) out << std::fixed << std::setprecision(5) << state.lon;
-    out << ",0,0,0,0,0,0";
+    out << ",";
+    if (vertical_rate_fresh) out << state.vertical_rate_fpm;
+    out << ",0,0,0,0,0";
+    out << ",";
+    if (vertical_rate_fresh) out << (state.vertical_rate_is_baro ? "BARO" : "GEOM");
+    out << ",";
+    if (state.has_category) {
+        out << std::uppercase << std::hex << std::setw(2) << std::setfill('0')
+            << (state.category & 0xff);
+    }
     return out.str();
 }
 
@@ -405,6 +426,10 @@ void handle_message(const std::array<uint8_t, MESSAGE_BYTES> &message, bool read
         decoder.frames_seen += 1;
 
         std::string line;
+        if (decoded.has_category) {
+            state.category = decoded.category;
+            state.has_category = true;
+        }
         if (decoded.has_callsign) {
             state.callsign = decoded.callsign;
             while (!state.callsign.empty() && state.callsign.back() == ' ') state.callsign.pop_back();
@@ -419,6 +444,14 @@ void handle_message(const std::array<uint8_t, MESSAGE_BYTES> &message, bool read
             state.track_deg = decoded.track_deg;
             state.has_speed = true;
             state.has_track = true;
+        }
+        if (decoded.has_vertical_rate) {
+            state.vertical_rate_fpm = decoded.vertical_rate_fpm;
+            state.vertical_rate_is_baro = decoded.vertical_rate_is_baro != 0;
+            state.has_vertical_rate = true;
+            state.vertical_rate_ms = state.last_seen_ms;
+        }
+        if (decoded.has_velocity || decoded.has_vertical_rate) {
             line = to_sbs_line(decoded.addr, state, 4, false);
         }
         if (decoded.has_cpr) {
@@ -506,6 +539,10 @@ void handle_readsb_decoded_message(const ReadsbBridgeMessage &decoded, std::ostr
     decoder.frames_seen += 1;
 
     std::string line;
+    if (decoded.has_category) {
+        state.category = decoded.category;
+        state.has_category = true;
+    }
     if (decoded.has_callsign) {
         state.callsign = decoded.callsign;
         while (!state.callsign.empty() && state.callsign.back() == ' ') state.callsign.pop_back();
@@ -520,6 +557,14 @@ void handle_readsb_decoded_message(const ReadsbBridgeMessage &decoded, std::ostr
         state.track_deg = decoded.track_deg;
         state.has_speed = true;
         state.has_track = true;
+    }
+    if (decoded.has_vertical_rate) {
+        state.vertical_rate_fpm = decoded.vertical_rate_fpm;
+        state.vertical_rate_is_baro = decoded.vertical_rate_is_baro != 0;
+        state.has_vertical_rate = true;
+        state.vertical_rate_ms = state.last_seen_ms;
+    }
+    if (decoded.has_velocity || decoded.has_vertical_rate) {
         line = to_sbs_line(decoded.addr, state, 4, false);
     }
     if (decoded.has_cpr) {

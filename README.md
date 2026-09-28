@@ -1,8 +1,16 @@
 # DEFKON ADSB SDR BRIDGE
 
-Open-source Android USB bridge for receiving 1090 MHz ADS-B traffic with a
-compatible RTL-SDR dongle and exposing local readsb-style JSON and
-SBS/BaseStation feeds to an application.
+Open-source Android app for receiving 1090 MHz ADS-B traffic with a compatible
+RTL-SDR USB dongle. It decodes traffic locally and provides readsb-style JSON
+and SBS/BaseStation feeds to compatible applications.
+
+## Source for release 0.1.6
+
+The complete source for Bridge 0.1.6 is at
+[bridge-v0.1.6](https://github.com/mediashotsnl-dev/Defkon-ADSB-SDR-Bridge/tree/bridge-v0.1.6).
+Use the source tag matching the version of the APK you received. The tag includes
+the Android and native build files, local modifications, and vendored readsb,
+rtl-sdr, and libusb source used by this release.
 
 ## Local interfaces
 
@@ -16,10 +24,9 @@ SDR driver code.
 ## License
 
 DEFKON ADSB SDR BRIDGE is licensed under the GNU General Public License version
-3 or later. See `LICENSE`, `COPYRIGHT`, and `THIRD_PARTY_NOTICES.md`.
-
-Complete corresponding source, including the vendored readsb, rtl-sdr and
-libusb revisions used by the native library, is included in this repository.
+3 or later. See [LICENSE](LICENSE), [COPYRIGHT](COPYRIGHT), and
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the Bridge license and
+third-party attributions.
 
 ## Build
 

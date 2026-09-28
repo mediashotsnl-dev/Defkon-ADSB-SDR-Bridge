@@ -1,4 +1,6 @@
 import java.util.Properties
+import java.net.HttpURLConnection
+import java.net.URI
 
 plugins {
     alias(libs.plugins.android.application)
@@ -39,6 +41,10 @@ val releaseSigningConfigured = listOf(
     releaseKeyPassword
 ).all { !it.isNullOrBlank() }
 
+val bridgeReleaseVersion = "0.1.6"
+val bridgeSourceUrl =
+    "https://github.com/mediashotsnl-dev/Defkon-ADSB-SDR-Bridge/tree/bridge-v$bridgeReleaseVersion"
+
 android {
     namespace = "com.mediashots.defkonadsbbridge"
     compileSdk = 36
@@ -48,8 +54,10 @@ android {
         applicationId = "com.mediashots.defkonadsbbridge"
         minSdk = 26
         targetSdk = 36
-        versionCode = 2
-        versionName = "0.1.1"
+        versionCode = 10
+        versionName = bridgeReleaseVersion
+
+        buildConfigField("String", "BRIDGE_SOURCE_URL", "\"$bridgeSourceUrl\"")
 
         externalNativeBuild {
             cmake {
@@ -104,4 +112,51 @@ dependencies {
     implementation("androidx.core:core:1.17.0")
     testImplementation(libs.json)
     testImplementation(libs.junit)
+}
+
+val verifyBridgeOpenSourceRelease = tasks.register("verifyBridgeOpenSourceRelease") {
+    group = "verification"
+    description = "Verifies GPL source contents and the public source tag for this Bridge release."
+    notCompatibleWithConfigurationCache("Checks the public release URL during a release build.")
+    inputs.property("bridgeVersion", bridgeReleaseVersion)
+    inputs.property("sourceUrl", bridgeSourceUrl)
+    inputs.files(
+        file("LICENSE"),
+        file("COPYRIGHT"),
+        file("THIRD_PARTY_NOTICES.md"),
+        file("NOTICE_ADSB_SDR.md"),
+        file("src/main/cpp/CMakeLists.txt"),
+        file("src/main/cpp/gpl/readsb/COPYING"),
+        file("src/main/cpp/gpl/readsb/LICENSE"),
+        file("src/main/cpp/gpl/rtl-sdr/COPYING"),
+        file("src/main/cpp/gpl/libusb/COPYING")
+    )
+    doLast {
+        inputs.files.files.forEach { required ->
+            check(required.isFile && required.length() > 0L) {
+                "Missing GPL release source or license file: ${required.absolutePath}"
+            }
+        }
+        val sourceReference = file("src/main/java/com/mediashots/defkonadsbbridge/MainActivity.java").readText()
+        check(sourceReference.contains("BuildConfig.BRIDGE_SOURCE_URL")) {
+            "Bridge UI must use the version-bound BuildConfig.BRIDGE_SOURCE_URL."
+        }
+        val connection = URI(bridgeSourceUrl).toURL().openConnection() as HttpURLConnection
+        connection.instanceFollowRedirects = true
+        connection.connectTimeout = 10_000
+        connection.readTimeout = 10_000
+        connection.requestMethod = "GET"
+        connection.setRequestProperty("User-Agent", "DEFKON-GPL-release-check")
+        val responseCode = connection.responseCode
+        connection.disconnect()
+        check(responseCode in 200..299) {
+            "Public GPL source tag is unavailable ($responseCode): $bridgeSourceUrl. " +
+                "Publish the exact source before building the release APK."
+        }
+        println("GPL source release verified: $bridgeSourceUrl")
+    }
+}
+
+tasks.matching { it.name == "preReleaseBuild" }.configureEach {
+    dependsOn(verifyBridgeOpenSourceRelease)
 }

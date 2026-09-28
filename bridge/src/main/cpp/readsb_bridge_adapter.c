@@ -132,6 +132,11 @@ static int fill_bridge_message(const struct modesMessage *mm, ReadsbBridgeMessag
         strncpy(out->callsign, mm->callsign, sizeof(out->callsign) - 1);
     }
 
+    if (mm->category_valid) {
+        out->has_category = 1;
+        out->category = (int) (mm->category & 0xff);
+    }
+
     if (mm->baro_alt_valid && mm->baro_alt_unit == UNIT_FEET) {
         out->has_altitude = 1;
         out->altitude_ft = mm->baro_alt;
@@ -141,6 +146,16 @@ static int fill_bridge_message(const struct modesMessage *mm, ReadsbBridgeMessag
         out->has_velocity = 1;
         out->speed_kt = (int) lroundf(mm->gs.selected);
         out->track_deg = rounded_heading(mm->heading);
+    }
+
+    if (mm->baro_rate_valid) {
+        out->has_vertical_rate = 1;
+        out->vertical_rate_fpm = mm->baro_rate;
+        out->vertical_rate_is_baro = 1;
+    } else if (mm->geom_rate_valid) {
+        out->has_vertical_rate = 1;
+        out->vertical_rate_fpm = mm->geom_rate;
+        out->vertical_rate_is_baro = 0;
     }
 
     if (mm->cpr_valid && mm->cpr_type == CPR_AIRBORNE) {

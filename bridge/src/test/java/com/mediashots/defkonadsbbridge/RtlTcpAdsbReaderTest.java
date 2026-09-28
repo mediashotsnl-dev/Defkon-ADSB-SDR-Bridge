@@ -30,6 +30,21 @@ public class RtlTcpAdsbReaderTest {
         assertEquals(2_000_000, NativeAdsbReader.sampleRateForDecoderMode(BridgeService.DECODER_MODE_LEGACY_JAVA));
     }
 
+    @Test
+    public void ecoUsesLargerReadBufferWithoutChangingReadsbSampleRate() {
+        assertEquals(32 * 1024, NativeAdsbReader.bufferSizeForEcoMode(false));
+        assertEquals(64 * 1024, NativeAdsbReader.bufferSizeForEcoMode(true));
+        assertEquals(2_400_000, NativeAdsbReader.sampleRateForDecoderMode(BridgeService.DECODER_MODE_READSB_CORE));
+    }
+
+    @Test
+    public void readsbUsbRetriesBackOffAndCapAtThirtySeconds() {
+        assertEquals(1_000L, BridgeService.nativeRetryDelayMs(1));
+        assertEquals(2_000L, BridgeService.nativeRetryDelayMs(2));
+        assertEquals(8_000L, BridgeService.nativeRetryDelayMs(4));
+        assertEquals(30_000L, BridgeService.nativeRetryDelayMs(7));
+    }
+
     private static RtlTcpAdsbReader reader() {
         return new RtlTcpAdsbReader("127.0.0.1", line -> { }, status -> { });
     }

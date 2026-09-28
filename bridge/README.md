@@ -14,13 +14,13 @@ This module is the bridge app:
 - Can send a test SBS target line for end-to-end client testing.
 - Has an NDK/JNI entry point for a built-in RTL-SDR driver.
 - Opens the Android USB file descriptor in the bridge service.
-- Falls back to the existing Android RTL-SDR driver app through `iqsrc://` while the native GPL core is not linked.
+- Can use the separate Android RTL-SDR driver app through `iqsrc://` as an optional fallback.
 - Requests fallback IQ on `127.0.0.1:14423`.
 - Tunes the SDR route for ADS-B at `1090.000 MHz`.
 - Decodes basic 1090 MHz Mode-S/ADS-B frames into SBS/BaseStation lines.
 
-The intended production route is built-in USB SDR inside the bridge. The current
-fallback route can use the separate Android RTL-SDR driver package
+The primary route is built-in USB SDR inside the bridge. The optional fallback
+route can use the separate Android RTL-SDR driver package
 `marto.rtl_tcp_andro` for testing.
 
 ## GPL driver route
@@ -32,7 +32,7 @@ required GPL notices and corresponding source for the driver route.
 The Bridge as a combined work is licensed under GNU GPL version 3 or later.
 Complete corresponding source for public releases is published at:
 
-- https://github.com/mediashotsnl-dev/Defkon-ADSB-SDR-Bridge/tree/bridge-v0.1.1
+- https://github.com/mediashotsnl-dev/Defkon-ADSB-SDR-Bridge/tree/bridge-v0.1.6
 
 See `LICENSE`, `COPYRIGHT`, `THIRD_PARTY_NOTICES.md`, `BUILDING.md`, and
 `RELEASING.md`. The same license and source information is available from the

@@ -1480,8 +1480,15 @@ int rtlsdr_open_from_fd(rtlsdr_dev_t **out_dev, intptr_t file_descriptor)
 	dev->rtl_xtal = DEF_RTL_XTAL_FREQ;
 
 	if (rtlsdr_write_reg(dev, USBB, USB_SYSCTL, 0x09, 1) < 0) {
-		fprintf(stderr, "Resetting device...\n");
-		libusb_reset_device(dev->devh);
+		/*
+		 * This handle wraps Android's UsbDeviceConnection file descriptor.
+		 * Resetting it here forces a USB detach/attach cycle and invalidates
+		 * the Java-side permission/connection. Fail cleanly so Android can
+		 * close the old descriptor and retry without re-enumerating the SDR.
+		 */
+		fprintf(stderr, "Android USB register probe failed; retrying without device reset\n");
+		r = -EIO;
+		goto err;
 	}
 
 	rtlsdr_init_baseband(dev);

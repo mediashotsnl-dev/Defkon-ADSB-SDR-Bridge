@@ -12,7 +12,7 @@ public class BridgeAircraftStoreTest {
     public void mergesSbsFieldsIntoAircraftJson() throws Exception {
         BridgeAircraftStore store = new BridgeAircraftStore();
         store.mergeSbsLine(
-            "MSG,3,1,1,ABC123,1,2026/07/16,10:00:00.000,2026/07/16,10:00:00.000,TEST123,1200,95,270,52.09000,5.12000,0,0,0,0,0,0",
+            "MSG,3,1,1,ABC123,1,2026/07/16,10:00:00.000,2026/07/16,10:00:00.000,TEST123,1200,95,270,52.09000,5.12000,320,0,0,0,0,0,BARO,A7",
             1_000L
         );
 
@@ -22,9 +22,32 @@ public class BridgeAircraftStoreTest {
         JSONObject target = aircraft.getJSONObject(0);
         assertEquals("ABC123", target.getString("hex"));
         assertEquals("TEST123", target.getString("flight"));
+        assertEquals("A7", target.getString("category"));
         assertEquals(1200, target.getInt("alt_baro"));
+        assertEquals(320.0, target.getDouble("baro_rate"), 0.01);
+        assertEquals(0.5, target.getDouble("seen_rate"), 0.01);
         assertEquals(52.09, target.getDouble("lat"), 0.00001);
         assertEquals(5.12, target.getDouble("lon"), 0.00001);
+    }
+
+    @Test
+    public void expiresVerticalRateWithoutRemovingAircraft() throws Exception {
+        BridgeAircraftStore store = new BridgeAircraftStore();
+        store.mergeSbsLine(
+            "MSG,4,1,1,ABC123,1,2026/07/16,10:00:00.000,2026/07/16,10:00:00.000,,,,,,,640,0,0,0,0,0,GEOM,",
+            1_000L
+        );
+
+        JSONObject fresh = new JSONObject(store.toAircraftJson(15_999L))
+            .getJSONArray("aircraft")
+            .getJSONObject(0);
+        assertEquals(640.0, fresh.getDouble("geom_rate"), 0.01);
+
+        JSONObject stale = new JSONObject(store.toAircraftJson(16_001L))
+            .getJSONArray("aircraft")
+            .getJSONObject(0);
+        assertFalse(stale.has("geom_rate"));
+        assertFalse(stale.has("seen_rate"));
     }
 
     @Test
