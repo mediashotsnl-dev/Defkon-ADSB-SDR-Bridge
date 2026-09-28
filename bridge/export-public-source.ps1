@@ -151,6 +151,8 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
       - name: Install Android native toolchain
         run: sdkmanager "platforms;android-36" "ndk;28.2.13676358" "cmake;3.22.1"
       - name: Unit tests and debug build
